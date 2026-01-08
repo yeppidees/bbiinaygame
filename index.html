@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>페럿 어드벤처</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #333; font-family: 'Arial', sans-serif; }
+        canvas { display: block; margin: 0 auto; background: #a5f3fc; cursor: pointer; border-bottom: 10px solid #4ade80; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #2d3436; font-weight: bold; pointer-events: none; }
+        #restartBtn { 
+            position: absolute; top: 60%; left: 50%; transform: translate(-50%, -50%);
+            padding: 20px 40px; font-size: 24px; cursor: pointer; display: none;
+            background: #ff7675; border: none; border-radius: 15px; color: white;
+            box-shadow: 0 6px #d63031;
+        }
+        #restartBtn:active { margin-top: 6px; box-shadow: none; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h1 style="margin:0; font-size: 40px;">Score: <span id="score">0</span></h1>
+        <p>Space: 점프 (2단 가능!) | 🍎: 50점 | ⭐: 무적</p>
+    </div>
+    <button id="restartBtn" onclick="resetGame()">다시 시작하기</button>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const restartBtn = document.getElementById('restartBtn');
+
+canvas.width = window.innerWidth;
+canvas.height = 500;
+
+// 사운드 시스템
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playNote(freq, type, duration, vol = 0.1) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+let score = 0;
+let isGameOver = false;
+let frame = 0;
+let gameSpeed = 8;
+let invince = 0;
+
+let ferret = {
+    x: 100, y: 350, w: 100, h: 50,
+    dy: 0, gravity: 0.8, jump: 15,
+    jCount: 0
+};
+
+let objects = []; // 장애물과 아이템 통합 관리
+
+// --- 페럿 그리기 (보내주신 픽셀 아트 정밀 모사) ---
+function drawFerret(f) {
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    
+    // 무적 효과 반짝임
+    if (invince > 0 && frame % 10 < 5) ctx.globalAlpha = 0.3;
+
+    // 1. 꼬리 (갈색)
+    ctx.fillStyle = "#8d6e63";
+    ctx.fillRect(-15, 20, 30, 15);
+
+    // 2. 몸통 (연한 베이지)
+    ctx.fillStyle = "#ede0d4";
+    ctx.fillRect(0, 10, 80, 40);
+
+    // 3. 다리 (갈색)
+    ctx.fillStyle = "#5d4037";
+    ctx.fillRect(10, 45, 15, 10);
+    ctx.fillRect(55, 45, 15, 10);
+
+    // 4. 얼굴 무늬 (다크서클 부분)
+    ctx.fillStyle = "#5d4037";
+    ctx.fillRect(60, 15, 40, 20); // 눈가 진한 갈색
+
+    // 5. 머리 윗부분 & 귀
+    ctx.fillStyle = "#ede0d4";
+    ctx.fillRect(70, 5, 30, 15); // 이마
+    ctx.fillStyle = "#5d4037";
+    ctx.fillRect(75, 0, 10, 10); // 왼쪽 귀
+    ctx.fillRect(90, 0, 10, 10); // 오른쪽 귀
+
+    // 6. 눈 (흰자 + 검은동자)
+    ctx.fillStyle = "white";
+    ctx.fillRect(75, 20, 8, 8);
+    ctx.fillRect(90, 20, 8, 8);
+    ctx.fillStyle = "black";
+    ctx.fillRect(78, 22, 4, 4);
+    ctx.fillRect(93, 22, 4, 4);
+
+    // 7. 코 & 주둥이
+    ctx.fillStyle = "#ffccbc"; // 핑크 코
+    ctx.fillRect(95, 32, 8, 6);
+    ctx.fillStyle = "#333";
+    ctx.fillRect(97, 34, 4, 2);
+
+    ctx.restore();
+}
+
+function resetGame() {
+    score = 0; isGameOver = false; frame = 0; gameSpeed = 8;
+    invince = 0; ferret.y = 350; ferret.dy = 0;
+    objects = [];
+    scoreEl.innerText = score;
+    restartBtn.style.display = 'none';
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    loop();
+}
+
+function update() {
+    if (isGameOver) return;
+
+    ferret.dy += ferret.gravity;
+    ferret.y += ferret.dy;
+
+    if (ferret.y > 400) {
+        ferret.y = 400;
+        ferret.dy = 0;
+        ferret.jCount = 0;
+    }
+
+    if (invince > 0) invince--;
+
+    // 배경음 (리듬)
+    if (frame % 30 === 0) playNote(200 + (score % 5) * 20, 'triangle', 0.1, 0.05);
+
+    // 오브젝트 생성 (장애물, 사과, 별)
+    if (frame % 80 === 0) {
+        let r = Math.random();
+        if (r < 0.7) { // 장애물
+            objects.push({x: canvas.width, y: 410, w: 40, h: 50, type: 'obs', color: '#e17055'});
+        } else if (r < 0.9) { // 사과
+            objects.push({x: canvas.width, y: 250 + Math.random()*100, w: 30, h: 30, type: 'apple'});
+        } else { // 별
+            objects.push({x: canvas.width, y: 200, w: 35, h: 35, type: 'star'});
+        }
+    }
+
+    objects.forEach((obj, i) => {
+        obj.x -= gameSpeed;
+        
+        // 충돌 체크
+        if (ferret.x < obj.x + obj.w && ferret.x + ferret.w > obj.x &&
+            ferret.y < obj.y + obj.h && ferret.y + ferret.h > obj.y) {
+            
+            if (obj.type === 'obs') {
+                if (invince > 0) {
+                    objects.splice(i, 1);
+                    score += 10;
+                    playNote(600, 'square', 0.1);
+                } else {
+                    gameOver();
+                }
+            } else if (obj.type === 'apple') {
+                objects.splice(i, 1);
+                score += 50;
+                playNote(800, 'sine', 0.2);
+            } else if (obj.type === 'star') {
+                objects.splice(i, 1);
+                invince = 400;
+                playNote(1200, 'sine', 0.4);
+            }
+        }
+        if (obj.x + obj.w < 0) objects.splice(i, 1);
+    });
+
+    if (frame % 10 === 0) score++;
+    scoreEl.innerText = score;
+    gameSpeed += 0.002;
+    frame++;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 장애물 및 아이템 그리기
+    objects.forEach(obj => {
+        if (obj.type === 'obs') {
+            ctx.fillStyle = obj.color;
+            ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+            ctx.fillStyle = "#636e72"; // 가시 무늬
+            ctx.fillRect(obj.x + 10, obj.y, 5, 50);
+        } else if (obj.type === 'apple') {
+            ctx.fillStyle = "#ff7675";
+            ctx.beginPath(); ctx.arc(obj.x+15, obj.y+15, 15, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "#55efc4";
+            ctx.fillRect(obj.x+12, obj.y, 6, 8);
+        } else if (obj.type === 'star') {
+            ctx.fillStyle = "#fdcb6e";
+            ctx.font = "30px Arial";
+            ctx.fillText("⭐", obj.x, obj.y + 25);
+        }
+    });
+
+    drawFerret(ferret);
+
+    if (isGameOver) {
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = "white";
+        ctx.textAlign = "center";
+        ctx.font = "bold 50px Arial";
+        ctx.fillText("GAME OVER", canvas.width/2, canvas.height/2);
+        ctx.font = "25px Arial";
+        ctx.fillText("최종 점수: " + score, canvas.width/2, canvas.height/2 + 50);
+    }
+}
+
+function gameOver() {
+    isGameOver = true;
+    restartBtn.style.display = 'block';
+    playNote(150, 'sawtooth', 0.5, 0.2);
+}
+
+function loop() {
+    update();
+    draw();
+    if (!isGameOver) requestAnimationFrame(loop);
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && ferret.jCount < 2) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        ferret.dy = -ferret.jump;
+        ferret.jCount++;
+        playNote(400 + ferret.jCount * 150, 'sine', 0.1);
+    }
+});
+
+// 시작 안내
+ctx.fillStyle = "#2d3436";
+ctx.font = "30px Arial";
+ctx.textAlign = "center";
+ctx.fillText("스페이스바를 눌러 시작하세요!", canvas.width/2, canvas.height/2);
+
+let started = false;
+window.addEventListener('keydown', () => {
+    if(!started) {
+        started = true;
+        loop();
+    }
+}, {once: true});
+</script>
+</body>
+</html>
